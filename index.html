@@ -1,150 +1,423 @@
 <!doctype html>
 <html lang="ko">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-  <title>3D Maze (Cardboard Fixed Movement)</title>
-  <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
-    #overlay {
-      position: fixed; inset: 0;
-      display: flex; align-items: center; justify-content: center;
-      pointer-events: none; color: #fff;
-      font-family: system-ui, sans-serif; background: rgba(0,0,0,.5);
-    }
-    #win {
-      position: fixed; inset: 0; display:none;
-      align-items:center; justify-content:center;
-      background:rgba(0,0,0,.75); color:#fff; font-size:28px;
-      font-weight:700;
-    }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Cardboard 레이캐스팅 XR 미로</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; color:#eee; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+  #ui {
+    position: fixed; left: 0; right: 0; bottom: 0; padding: 8px 10px; 
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,.6) 30%, rgba(0,0,0,.8) 100%);
+    z-index: 5;
+  }
+  button, select { background:#1f1f1f; color:#eee; border:1px solid #444; border-radius:8px; padding:8px 10px; }
+  button:active { transform: translateY(1px); }
+  #canvas { position: fixed; inset: 0; width: 100%; height: 100%; display:block; }
+  #toast {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,.7); color:#fff; padding:8px 12px; border-radius: 8px; font-size: 14px; z-index: 6;
+  }
+  #win {
+    position: fixed; inset: 0; display: none; place-items: center; z-index: 10;
+    background: rgba(0,0,0,.75);
+    color: #fff; text-align:center;
+  }
+  #win h1 { margin: 0 0 12px 0; font-size: 32px; }
+  #mapwrap {
+    position: fixed; top: 10px; left: 10px; z-index: 6; background: rgba(0,0,0,.5);
+    padding: 6px; border-radius: 8px; display: none;
+  }
+  #mapwrap textarea {
+    width: 260px; height: 180px; background:#0e0e0e; color:#9fe9ff; border:1px solid #333; border-radius:6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #hud {
+    position: fixed; top: 10px; right: 10px; z-index: 6; background: rgba(0,0,0,.5);
+    padding: 6px 8px; border-radius: 8px; font-size: 12px; line-height: 1.2;
+  }
+</style>
 </head>
 <body>
-  <div id="overlay">📱 카드보드에 넣고 바라보면 자동으로 이동합니다!</div>
-  <div id="win">🎉 탈출 성공!</div>
+<canvas id="canvas"></canvas>
 
-  <script type="module">
-    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-    import { VRButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js';
+<div id="toast" style="display:none;"></div>
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x101218);
+<div id="hud">yaw: <span id="yawDeg">0</span>°<br>pos: <span id="pos">0,0</span></div>
 
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.xr.enabled = true;
-    document.body.appendChild(renderer.domElement);
-    document.body.appendChild(VRButton.createButton(renderer));
+<div id="mapwrap">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
+    <strong style="font-size:14px;">맵 편집(P, #, 0, x)</strong>
+    <button id="applyMap">적용</button>
+  </div>
+  <textarea id="mapInput"></textarea>
+</div>
 
-    const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
-    scene.add(light);
+<div id="win">
+  <div>
+    <h1>🎉 탈출 성공!</h1>
+    <p>다시 시작하려면 아래 버튼을 눌러 주세요.</p>
+    <button id="restart">다시 시작</button>
+  </div>
+</div>
 
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(100,100),
-      new THREE.MeshStandardMaterial({ color: 0x1e232b })
-    );
-    floor.rotation.x = -Math.PI/2;
-    scene.add(floor);
+<div id="ui">
+  <button id="perm">센서 권한 요청</button>
+  <button id="autowalk">자동 전진: 끔</button>
+  <button id="recenter">시선 리셋</button>
+  <button id="sbs">카드보드 모드: 켬</button>
+  <button id="fullscreen">전체화면</button>
+  <button id="toggleMap">맵 편집</button>
+  <select id="quality">
+    <option value="140">화질: 보통</option>
+    <option value="100">화질: 낮음(배터리 절약)</option>
+    <option value="200">화질: 높음</option>
+    <option value="280">화질: 매우 높음</option>
+  </select>
+</div>
 
-    // 미로 맵
-    const layout = [
-      '#################',
-      '#P000000#0000000#',
-      '#0###0###0###0###',
-      '#000#0000000#000#',
-      '###0###0###0###0#',
-      '#0000000#00000X0#',
-      '#################'
-    ];
-    const CELL = 2.0, WALL_H=2.2;
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x3b4554 });
-    const wallGeo = new THREE.BoxGeometry(CELL,WALL_H,CELL);
-    const walls=[];
-    let playerStart=new THREE.Vector3(), goalPos=null;
-    for(let y=0;y<layout.length;y++){
-      for(let x=0;x<layout[y].length;x++){
-        const c=layout[y][x];
-        if(c==='#'){
-          const w=new THREE.Mesh(wallGeo,wallMat);
-          w.position.set(x*CELL,WALL_H/2,y*CELL);
-          scene.add(w); walls.push(w);
+<script>
+(() => {
+  // ----- 게임 설정 -----
+  const MAP_ASCII = `
+########################
+#0P00000000000#0000000x#
+#0######0#####0#######0#
+#000000#0#0000000000#00#
+#####0##0#0########0#0##
+#0000#000#00000000#0#00#
+#0#######0#######0#0#0##
+#0000000000000000#00000#
+########################
+`.trim();
+
+  const TILE_WALL = '#', TILE_EMPTY = '0', TILE_GOAL = 'x', TILE_PLAYER = 'P';
+  const CELL = 1.0;                 // 셀 한 칸 크기(그리드 단위)
+  const MOVE_SPEED = 1.8;           // 초당 전진 속도(셀/초)
+  const ROT_SPEED_MOUSE = 0.003;    // 마우스 드래그 회전 감도
+  const IPD = 0.06;                 // 양안 시차(간단 모델)
+  const EYE_FOV = Math.PI * 0.8;    // 눈 한쪽 FOV(래이캐스트 시)
+  const MAX_DIST = 30.0;            // 최대 레이 거리
+  const GOAL_RADIUS = 0.25;         // 목표 도달 판정 반경
+  const WALL_SHADE = [0.95,0.75,0.55,0.4]; // 벽 셰이딩(축 히트/사선 등)
+
+  // ----- 상태 -----
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const yawDegEl = document.getElementById('yawDeg');
+  const posEl = document.getElementById('pos');
+  const toast = document.getElementById('toast');
+
+  let grid = [];
+  let startPos = {x:1.5, y:1.5};
+  let player = { x: 1.5, y: 1.5, yaw: 0 };
+  let autoWalk = false;
+  let sbsMode = true;
+  let nColsPerEye = 140;
+  let lastT = performance.now();
+  let yawOffset = 0; // 리센터
+
+  // ----- 맵 파싱 -----
+  function loadMap(ascii) {
+    const rows = ascii.split('\n').map(r => r.replace(/\r/g,''));
+    grid = rows.map(r => r.split(''));
+    for (let y=0; y<grid.length; y++) {
+      for (let x=0; x<grid[y].length; x++) {
+        if (grid[y][x] === TILE_PLAYER) {
+          startPos = {x: x + 0.5, y: y + 0.5};
+          grid[y][x] = TILE_EMPTY;
         }
-        if(c==='P') playerStart.set(x*CELL,1.6,y*CELL);
-        if(c==='X') goalPos=new THREE.Vector3(x*CELL,0.5,y*CELL);
       }
     }
+    resetPlayer();
+  }
 
-    const goal=new THREE.Mesh(
-      new THREE.ConeGeometry(0.5,1,16),
-      new THREE.MeshStandardMaterial({ color:0x00ff88 })
-    );
-    goal.position.copy(goalPos);
-    scene.add(goal);
+  function resetPlayer() {
+    player.x = startPos.x;
+    player.y = startPos.y;
+    player.yaw = 0;
+    yawOffset = 0;
+    autoWalk = false;
+    document.getElementById('autowalk').textContent = '자동 전진: 끔';
+    document.getElementById('win').style.display = 'none';
+  }
 
-    // Raycaster
-    const raycaster=new THREE.Raycaster(), dir=new THREE.Vector3(), origin=new THREE.Vector3();
+  loadMap(MAP_ASCII);
+  // 맵 편집 UI 초깃값
+  document.getElementById('mapInput').value = MAP_ASCII;
 
-    // 플레이어 상태
-    const player={ pos: playerStart.clone(), speed:1.2 };
+  // ----- 유틸 -----
+  function showToast(msg, ms=1500){ toast.textContent=msg; toast.style.display='block'; setTimeout(()=>toast.style.display='none', ms); }
 
-    // XR 이동용 referenceSpace
-    let referenceSpace=null;
-    renderer.xr.addEventListener('sessionstart', ()=>{
-      const session = renderer.xr.getSession();
-      session.requestReferenceSpace('local').then(ref=>{
-        referenceSpace=ref;
-        console.log('[XR] referenceSpace initialized');
-      });
-    });
+  function isWall(x, y) {
+    const gx = Math.floor(x), gy = Math.floor(y);
+    if (gy < 0 || gy >= grid.length || gx < 0 || gx >= grid[0].length) return true;
+    return grid[gy][gx] === TILE_WALL;
+  }
+  function isGoalAt(x, y) {
+    const gx = Math.floor(x), gy = Math.floor(y);
+    if (gy < 0 || gy >= grid.length || gx < 0 || gx >= grid[0].length) return false;
+    return grid[gy][gx] === TILE_GOAL;
+  }
 
-    // 충돌 검사
-    function collide(next){
-      for(const w of walls){
-        const dx=Math.abs(next.x-w.position.x);
-        const dz=Math.abs(next.z-w.position.z);
-        if(dx<CELL/2 && dz<CELL/2) return true;
-      }
-      return false;
-    }
+  // ----- 디바이스 오리엔테이션 -----
+  let hasOrientation = false;
+  let yawFromDevice = 0; // 라디안(0 = 동쪽 기준으로 해도 괜찮음)
+  let pitchFromDevice = 0;
 
-    const clock=new THREE.Clock();
-    renderer.setAnimationLoop(()=>{
-      const dt=Math.min(clock.getDelta(),0.05);
-      // 이동 방향 계산
-      const headCam=renderer.xr.getCamera(camera);
-      headCam.getWorldDirection(dir); dir.y=0; dir.normalize();
+  function clampAngle(a){ while(a<-Math.PI) a+=2*Math.PI; while(a>Math.PI) a-=2*Math.PI; return a; }
 
-      origin.copy(player.pos); origin.y=1.6;
-      raycaster.set(origin,dir);
-      const hits=raycaster.intersectObjects(walls,true);
-      let scale=1.0;
-      if(hits.length>0 && hits[0].distance<1.0) scale=0.0;
+  function onOrientation(e) {
+    hasOrientation = true;
+    // 가장 간단한 모델: alpha(자기장 기준 방위) → yaw, beta → pitch
+    // 브라우저/기기 편차가 있으므로 오프셋 재조정(recenter) 지원
+    const alpha = e.alpha ?? 0;
+    const beta = e.beta ?? 0;
+    // iOS webkitCompassHeading 우선
+    const compass = e.webkitCompassHeading;
+    let yawDeg = (typeof compass === 'number') ? (360 - compass) : alpha; // 0~360, 시계반대 CCW
+    // 화면 회전에 따른 보정은 간단화를 위해 생략(카드보드 가로 고정 가정)
+    yawFromDevice = clampAngle((yawDeg * Math.PI/180) + yawOffset);
+    pitchFromDevice = (beta - 90) * Math.PI/180; // 대략적
+  }
 
-      const move=dir.clone().multiplyScalar(player.speed*dt*scale);
-      const next=player.pos.clone().add(move);
-      if(!collide(next)) player.pos.copy(next);
-
-      // VR 모드일 때는 referenceSpace offset으로 이동
-      if(renderer.xr.isPresenting && referenceSpace){
-        const offset = new XRRigidTransform({x:-player.pos.x, y:-1.6, z:-player.pos.z});
-        renderer.xr.setReferenceSpace(referenceSpace.getOffsetReferenceSpace(offset));
+  // 권한 요청(iOS 등)
+  async function requestSensorPermission() {
+    try {
+      const anyDO = window.DeviceOrientationEvent;
+      if (anyDO && typeof anyDO.requestPermission === 'function') {
+        const st = await anyDO.requestPermission();
+        if (st === 'granted') {
+          window.addEventListener('deviceorientation', onOrientation, true);
+          showToast('센서 사용 허용됨');
+        } else { showToast('센서 권한 거부됨'); }
       } else {
-        camera.position.copy(player.pos);
+        // 안드로이드/데스크탑 등: 권한 API 없음, 바로 리스너
+        window.addEventListener('deviceorientation', onOrientation, true);
+        showToast('센서 연결 시도');
       }
+    } catch (e) {
+      console.error(e);
+      showToast('센서 권한 요청 실패');
+    }
+  }
 
-      if(goalPos && player.pos.distanceTo(goalPos)<1.0){
-        document.getElementById('win').style.display='flex';
+  // ----- 입력(마우스/키보드) -----
+  let dragging = false, lastX = 0;
+  canvas.addEventListener('mousedown', (e)=>{ dragging=true; lastX=e.clientX; });
+  window.addEventListener('mouseup', ()=> dragging=false);
+  window.addEventListener('mousemove', (e)=>{
+    if (!dragging) return;
+    const dx = e.clientX - lastX; lastX = e.clientX;
+    player.yaw = clampAngle(player.yaw + dx * ROT_SPEED_MOUSE);
+  });
+  window.addEventListener('keydown', (e)=>{
+    if (e.key === 'w' || e.key === 'ArrowUp') moveForward(0.16); // 한 번에 조금
+    if (e.key === 'ArrowLeft') player.yaw = clampAngle(player.yaw - 0.08);
+    if (e.key === 'ArrowRight') player.yaw = clampAngle(player.yaw + 0.08);
+  });
+
+  // ----- 이동/충돌 -----
+  function moveForward(dt) {
+    const speed = MOVE_SPEED * dt;
+    const dir = playerYaw();
+    const nx = player.x + Math.cos(dir) * speed;
+    const ny = player.y + Math.sin(dir) * speed;
+
+    // 간단 충돌 처리: 축별로 따로 검사
+    if (!isWall(nx, player.y)) player.x = nx;
+    if (!isWall(player.x, ny)) player.y = ny;
+
+    // 목표 도달 체크
+    if (isGoalAt(player.x, player.y)) {
+      document.getElementById('win').style.display = 'grid';
+    } else {
+      // 반경 판정
+      const gx = Math.floor(player.x)+0.5, gy = Math.floor(player.y)+0.5;
+      if (isGoalAt(gx, gy)) {
+        const dx = player.x - gx, dy = player.y - gy;
+        if (Math.hypot(dx,dy) < GOAL_RADIUS) {
+          document.getElementById('win').style.display = 'grid';
+        }
       }
-      renderer.render(scene,camera);
-    });
+    }
+  }
 
-    window.addEventListener('resize',()=>{
-      camera.aspect=window.innerWidth/window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth,window.innerHeight);
-    });
-  </script>
+  // ----- 카메라/시야 -----
+  function playerYaw() {
+    // 센서가 있으면 그 값을, 없으면 수동 yaw
+    const base = hasOrientation ? yawFromDevice : player.yaw;
+    return base;
+  }
+
+  // ----- 레이캐스팅(DDA) -----
+  function castRay(ox, oy, ang) {
+    // DDA 알고리즘
+    const dx = Math.cos(ang), dy = Math.sin(ang);
+    let mapX = Math.floor(ox), mapY = Math.floor(oy);
+
+    const deltaDistX = Math.abs(1 / (dx || 1e-9));
+    const deltaDistY = Math.abs(1 / (dy || 1e-9));
+
+    let stepX, sideDistX;
+    if (dx < 0) { stepX = -1; sideDistX = (ox - mapX) * deltaDistX; }
+    else { stepX = 1; sideDistX = (mapX + 1.0 - ox) * deltaDistX; }
+
+    let stepY, sideDistY;
+    if (dy < 0) { stepY = -1; sideDistY = (oy - mapY) * deltaDistY; }
+    else { stepY = 1; sideDistY = (mapY + 1.0 - oy) * deltaDistY; }
+
+    let hit = false, side = 0;
+    let dist = 0;
+
+    for (let i=0; i<256; i++) {
+      if (sideDistX < sideDistY) {
+        sideDistX += deltaDistX;
+        mapX += stepX; side = 0;
+      } else {
+        sideDistY += deltaDistY;
+        mapY += stepY; side = 1;
+      }
+      if (mapY<0||mapY>=grid.length||mapX<0||mapX>=grid[0].length) { dist = MAX_DIST; break; }
+      if (grid[mapY][mapX] === TILE_WALL) { hit = true; break; }
+    }
+    if (hit) {
+      if (side === 0) dist = (mapX - ox + (1 - stepX)/2) / (dx || 1e-9);
+      else dist = (mapY - oy + (1 - stepY)/2) / (dy || 1e-9);
+    } else {
+      dist = MAX_DIST;
+    }
+    return { dist, side };
+  }
+
+  // ----- 렌더 -----
+  function resize() {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+  }
+  window.addEventListener('resize', resize, {passive:true});
+  resize();
+
+  function drawEye(eyeIndex, cols, totalCols) {
+    const W = canvas.width, H = canvas.height;
+    const halfW = W/2;
+    const eyeW = sbsMode ? halfW : W; // SBS면 절반씩
+    const xOffset = sbsMode ? (eyeIndex===0 ? 0 : halfW) : 0;
+
+    // 시차(양안 위치) – 간단 모델: 시선에 수직한 방향으로 ±IPD/2 만큼 눈 위치 이동
+    const dir = playerYaw();
+    const rightX = Math.cos(dir + Math.PI/2), rightY = Math.sin(dir + Math.PI/2);
+    const ex = player.x + (eyeIndex===0 ? -IPD/2 : IPD/2) * rightX;
+    const ey = player.y + (eyeIndex===0 ? -IPD/2 : IPD/2) * rightY;
+
+    // 각 칼럼 렌더
+    const colW = eyeW / cols;
+    const startCol = eyeIndex===0 ? 0 : totalCols - cols;
+
+    for (let i=0; i<cols; i++) {
+      const screenX = (i / cols) * 2 - 1; // -1..1
+      const rayAngle = dir + screenX * (EYE_FOV/2);
+      const { dist, side } = castRay(ex, ey, rayAngle);
+      const corrDist = dist * Math.cos(rayAngle - dir); // 피쉬아이 보정
+
+      // 벽 높이
+      const wallH = Math.min(H, (CELL / (corrDist || 1e-3)) * (H / Math.tan(EYE_FOV/2)) );
+      const yTop = (H - wallH)/2;
+      const shade = WALL_SHADE[side ? 1 : 0] * (0.85 - Math.min(corrDist / MAX_DIST, 0.75));
+
+      // 하늘/바닥 간단 그라데이션
+      ctx.fillStyle = '#000';
+      ctx.fillRect(xOffset + i*colW, 0, Math.ceil(colW)+1, yTop);
+      ctx.fillStyle = 'rgba(255,255,255,'+Math.max(0.0, Math.min(1.0, shade))+')';
+      ctx.fillRect(xOffset + i*colW, yTop, Math.ceil(colW)+1, wallH);
+      ctx.fillStyle = 'rgba(40,40,40,1)';
+      ctx.fillRect(xOffset + i*colW, yTop+wallH, Math.ceil(colW)+1, H - (yTop+wallH));
+    }
+
+    // 간단 십자선(가이드)
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = '#fff';
+    const cx = xOffset + eyeW/2, cy = H/2;
+    ctx.fillRect(cx-1, cy-12, 2, 24);
+    ctx.fillRect(cx-12, cy-1, 24, 2);
+    ctx.globalAlpha = 1;
+  }
+
+  function render(dt) {
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0,0,W,H);
+
+    const colsPerEye = nColsPerEye;
+    if (sbsMode) {
+      drawEye(0, colsPerEye, colsPerEye*2);
+      drawEye(1, colsPerEye, colsPerEye*2);
+    } else {
+      // 모노 보기(테스트용)
+      drawEye(0, colsPerEye, colsPerEye);
+    }
+
+    // HUD
+    yawDegEl.textContent = Math.round((playerYaw()*180/Math.PI + 360) % 360);
+    posEl.textContent = `${player.x.toFixed(2)}, ${player.y.toFixed(2)}`;
+  }
+
+  // ----- 루프 -----
+  function loop(t) {
+    const dt = Math.min(0.05, (t - lastT)/1000);
+    lastT = t;
+
+    // 자동 전진
+    if (autoWalk) moveForward(dt);
+
+    render(dt);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // ----- 버튼/UI -----
+  document.getElementById('perm').addEventListener('click', requestSensorPermission);
+  document.getElementById('autowalk').addEventListener('click', ()=>{
+    autoWalk = !autoWalk; 
+    document.getElementById('autowalk').textContent = `자동 전진: ${autoWalk?'켬':'끔'}`;
+  });
+  document.getElementById('recenter').addEventListener('click', ()=>{
+    // 현재 yaw를 0으로 보정
+    const current = hasOrientation ? yawFromDevice : player.yaw;
+    yawOffset -= current; // 보정치 업데이트
+    showToast('시선 기준 재설정 완료');
+  });
+  document.getElementById('sbs').addEventListener('click', ()=>{
+    sbsMode = !sbsMode;
+    document.getElementById('sbs').textContent = `카드보드 모드: ${sbsMode?'켬':'끔'}`;
+  });
+  document.getElementById('fullscreen').addEventListener('click', ()=>{
+    const el = document.documentElement;
+    if (!document.fullscreenElement) el.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  });
+
+  // 맵 편집기
+  document.getElementById('toggleMap').addEventListener('click', ()=>{
+    const wrap = document.getElementById('mapwrap');
+    wrap.style.display = (wrap.style.display==='none' || !wrap.style.display) ? 'block' : 'none';
+  });
+  document.getElementById('applyMap').addEventListener('click', ()=>{
+    const txt = document.getElementById('mapInput').value.trimEnd();
+    try {
+      loadMap(txt);
+      showToast('맵 적용 완료');
+    } catch (e) {
+      console.error(e);
+      showToast('맵 적용 실패(콘솔 확인)');
+    }
+  });
+  document.getElementById('restart').addEventListener('click', resetPlayer);
+
+  // 모바일에서 화면 깨짐 방지(가로 고정 권장)
+  window.addEventListener('orientationchange', ()=> setTimeout(resize, 200));
+  // 초기에 센서 시도(권한 필요시 버튼)
+  requestSensorPermission();
+})();
+</script>
 </body>
 </html>
