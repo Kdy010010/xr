@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>3D Maze for Google Cardboard (Auto Walk)</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+    #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; font-family: system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Apple SD Gothic Neo, sans-serif; }
+    #msg { background: rgba(0,0,0,.6); color: #fff; padding: 10px 14px; border-radius: 10px; font-size: 14px; }
+    #win { position: fixed; inset: 0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.75); color:#fff; font-size:28px; font-weight:700; }
+  </style>
+</head>
+<body>
+  <div id="overlay"><div id="msg">카드보드에 넣고 바라보면 자동으로 이동합니다!</div></div>
+  <div id="win">탈출 성공! 🎉</div>
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { VRButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js';
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x101218);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+    document.body.appendChild(VRButton.createButton(renderer));
+
+    const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+    scene.add(light);
+
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.MeshStandardMaterial({ color: 0x1e232b }));
+    floor.rotation.x = -Math.PI / 2;
+    scene.add(floor);
+
+    const reticle = new THREE.Mesh(new THREE.RingGeometry(0.004, 0.006, 32), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    reticle.position.z = -2;
+    camera.add(reticle);
+    scene.add(camera);
+
+    const raycaster = new THREE.Raycaster();
+    const rayDir = new THREE.Vector3();
+    const rayOrigin = new THREE.Vector3();
+
+    // Maze defined using # (벽), 0 (빈 공간), P (플레이어), X (목표지점)
+    const layout = [
+      '#################',
+      '#P000000#0000000#',
+      '#0###0###0###0###',
+      '#000#0000000#000#',
+      '###0###0###0###0#',
+      '#0000000#00000X0#',
+      '#################'
+    ];
+
+    const CELL = 2.0;
+    const WALL_H = 2.2;
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x3b4554 });
+    const wallGeo = new THREE.BoxGeometry(CELL, WALL_H, CELL);
+    const walls = [];
+    const collidables = [];
+
+    let playerPos = new THREE.Vector3();
+    let goalPos = null;
+
+    for (let y = 0; y < layout.length; y++) {
+      for (let x = 0; x < layout[y].length; x++) {
+        const c = layout[y][x];
+        if (c === '#') {
+          const wall = new THREE.Mesh(wallGeo, wallMat);
+          wall.position.set(x * CELL, WALL_H/2, y * CELL);
+          scene.add(wall);
+          walls.push(wall);
+          collidables.push(wall);
+        }
+        if (c === 'P') {
+          playerPos.set(x * CELL, 1.6, y * CELL);
+        }
+        if (c === 'X') {
+          goalPos = new THREE.Vector3(x * CELL, 0.5, y * CELL);
+        }
+      }
+    }
+
+    camera.position.copy(playerPos);
+
+    const goal = new THREE.Mesh(
+      new THREE.ConeGeometry(0.5, 1, 16),
+      new THREE.MeshStandardMaterial({ color: 0x00ff88 })
+    );
+    if (goalPos) goal.position.copy(goalPos);
+    scene.add(goal);
+
+    const winEl = document.getElementById('win');
+    function showWin() { winEl.style.display = 'flex'; }
+
+    const player = { speed: 1.5, radius: 0.25 };
+
+    function collide(center) {
+      for (const w of walls) {
+        const dx = Math.abs(center.x - w.position.x);
+        const dz = Math.abs(center.z - w.position.z);
+        if (dx < CELL/2 && dz < CELL/2) return true;
+      }
+      return false;
+    }
+
+    const clock = new THREE.Clock();
+
+    renderer.setAnimationLoop(() => {
+      const dt = Math.min(0.05, clock.getDelta());
+
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      dir.y = 0;
+      dir.normalize();
+
+      // Raycast ahead
+      rayOrigin.copy(camera.position);
+      rayOrigin.y = 1.6;
+      raycaster.set(rayOrigin, dir);
+      const hits = raycaster.intersectObjects(collidables, true);
+      let scale = 1.0;
+      if (hits.length > 0 && hits[0].distance < 1.0) scale = 0.0;
+
+      const move = dir.multiplyScalar(player.speed * dt * scale);
+      const next = camera.position.clone().add(move);
+      if (!collide(next)) camera.position.copy(next);
+
+      if (goalPos && camera.position.distanceTo(goalPos) < 1.0) {
+        showWin();
+      }
+
+      renderer.render(scene, camera);
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+  </script>
+</body>
+</html>
