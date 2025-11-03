@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-  <title>3D Maze for Google Cardboard (Auto Walk)</title>
+  <title>3D Maze for Google Cardboard (Android Fixed)</title>
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
-    #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; font-family: system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Apple SD Gothic Neo, sans-serif; }
+    #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; font-family: system-ui, sans-serif; }
     #msg { background: rgba(0,0,0,.6); color: #fff; padding: 10px 14px; border-radius: 10px; font-size: 14px; }
     #win { position: fixed; inset: 0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.75); color:#fff; font-size:28px; font-weight:700; }
   </style>
@@ -14,6 +14,7 @@
 <body>
   <div id="overlay"><div id="msg">카드보드에 넣고 바라보면 자동으로 이동합니다!</div></div>
   <div id="win">탈출 성공! 🎉</div>
+
   <script type="module">
     import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
     import { VRButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js';
@@ -31,11 +32,17 @@
     const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
     scene.add(light);
 
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.MeshStandardMaterial({ color: 0x1e232b }));
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(100, 100),
+      new THREE.MeshStandardMaterial({ color: 0x1e232b })
+    );
     floor.rotation.x = -Math.PI / 2;
     scene.add(floor);
 
-    const reticle = new THREE.Mesh(new THREE.RingGeometry(0.004, 0.006, 32), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    const reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.004, 0.006, 32),
+      new THREE.MeshBasicMaterial({ color: 0xffffff })
+    );
     reticle.position.z = -2;
     camera.add(reticle);
     scene.add(camera);
@@ -44,7 +51,7 @@
     const rayDir = new THREE.Vector3();
     const rayOrigin = new THREE.Vector3();
 
-    // Maze defined using # (벽), 0 (빈 공간), P (플레이어), X (목표지점)
+    // Maze layout (#:벽, 0:빈 공간, P:플레이어, X:목표)
     const layout = [
       '#################',
       '#P000000#0000000#',
@@ -70,21 +77,15 @@
         const c = layout[y][x];
         if (c === '#') {
           const wall = new THREE.Mesh(wallGeo, wallMat);
-          wall.position.set(x * CELL, WALL_H/2, y * CELL);
+          wall.position.set(x * CELL, WALL_H / 2, y * CELL);
           scene.add(wall);
           walls.push(wall);
           collidables.push(wall);
         }
-        if (c === 'P') {
-          playerPos.set(x * CELL, 1.6, y * CELL);
-        }
-        if (c === 'X') {
-          goalPos = new THREE.Vector3(x * CELL, 0.5, y * CELL);
-        }
+        if (c === 'P') playerPos.set(x * CELL, 1.6, y * CELL);
+        if (c === 'X') goalPos = new THREE.Vector3(x * CELL, 0.5, y * CELL);
       }
     }
-
-    camera.position.copy(playerPos);
 
     const goal = new THREE.Mesh(
       new THREE.ConeGeometry(0.5, 1, 16),
@@ -96,16 +97,23 @@
     const winEl = document.getElementById('win');
     function showWin() { winEl.style.display = 'flex'; }
 
-    const player = { speed: 1.5, radius: 0.25 };
+    const player = { speed: 1.5, radius: 0.25, pos: playerPos.clone() };
 
     function collide(center) {
       for (const w of walls) {
         const dx = Math.abs(center.x - w.position.x);
         const dz = Math.abs(center.z - w.position.z);
-        if (dx < CELL/2 && dz < CELL/2) return true;
+        if (dx < CELL / 2 && dz < CELL / 2) return true;
       }
       return false;
     }
+
+    // ✅ WebXR 세션 시작 후 카메라 위치를 미로 시작점으로 초기화
+    renderer.xr.addEventListener('sessionstart', () => {
+      const xrCam = renderer.xr.getCamera(camera);
+      xrCam.position.set(playerPos.x, playerPos.y, playerPos.z);
+      console.log('[WebXR] Session started, camera repositioned.');
+    });
 
     const clock = new THREE.Clock();
 
@@ -117,7 +125,7 @@
       dir.y = 0;
       dir.normalize();
 
-      // Raycast ahead
+      // 레이캐스트로 충돌 감지
       rayOrigin.copy(camera.position);
       rayOrigin.y = 1.6;
       raycaster.set(rayOrigin, dir);
@@ -126,12 +134,18 @@
       if (hits.length > 0 && hits[0].distance < 1.0) scale = 0.0;
 
       const move = dir.multiplyScalar(player.speed * dt * scale);
-      const next = camera.position.clone().add(move);
-      if (!collide(next)) camera.position.copy(next);
+      const next = player.pos.clone().add(move);
+      if (!collide(next)) player.pos.copy(next);
 
-      if (goalPos && camera.position.distanceTo(goalPos) < 1.0) {
-        showWin();
+      // VR 모드/비VR 모드 모두 반영
+      if (renderer.xr.isPresenting) {
+        const xrCam = renderer.xr.getCamera(camera);
+        xrCam.parent.position.set(player.pos.x, player.pos.y - 1.6, player.pos.z);
+      } else {
+        camera.position.copy(player.pos);
       }
+
+      if (goalPos && player.pos.distanceTo(goalPos) < 1.0) showWin();
 
       renderer.render(scene, camera);
     });
@@ -141,7 +155,6 @@
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
-
   </script>
 </body>
 </html>
